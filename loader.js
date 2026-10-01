@@ -1,98 +1,100 @@
 /**
- * 伏笔引擎 · 加载器（manifest.json 的 js 字段指向本文件）
+ * 伏笔引擎 · 加载器
  *
- * ── 为什么需要一个加载器 ──
- * 酒馆扩展的 js 字段只能指定【一个】文件，但本插件分 core / index / ui 三层。
+ * ── 设计原则（都是踩坑换来的）──
+ * 1. 只用最基础的 JS 语法。不用 import.meta、不用可选链、不用箭头函数。
+ *    原因：酒馆把本文件当「模块」加载，万一某个手机浏览器对模块特有语法的解析
+ *    有差异，整个文件会语法报错、一行都不执行 —— 表现就是「装上了但毫无反应，
+ *    连报错都没有」，极难排查。宁可啰嗦，不要花活。
  *
- * ── 为什么用 import.meta.url 而不是 document.currentScript ──
- * 🔴 这是个踩过的坑，务必记住：
- *    酒馆（1.13.5 实测）用 `script.type = 'module'` 加载扩展脚本。
- *    而 **document.currentScript 在 ES module 里恒为 null**。
- *    早期版本用 currentScript.src 推导目录，结果 base 为空、加载器直接 return，
- *    表现是「扩展装上了、文件都在、但页面毫无反应」——极难排查。
- *    ES module 里取自身 URL 的正确方式是 import.meta.url。
+ * 2. 不依赖 document.currentScript 推导目录。
+ *    document.currentScript 在「模块」里恒为 null（酒馆就是用模块加载的）。
  *
- * ── 为什么不用静态 import ──
- * 静态 import 一旦遇到 MIME 不符（部分安卓 WebView / 代理会返回 text/plain）
- * 会整包静默失败，连报错都看不到。这里改成「动态注入 script 标签 + fetch/eval 兜底」，
- * 让每一步都可观测、可降级。
+ * 3. 目录靠「反查自己那个 script 标签」确定，不靠任何特殊变量。
+ *
+ * 4. 加载过程有可见反馈：右上角一个小徽章，会显示到哪一步了。
+ *    这样出问题时不用翻控制台，看屏幕就知道。
  */
 (function () {
     'use strict';
 
-    // 顺序重要：core（纯逻辑）→ index（集成）→ ui（界面）
     var FILES = ['core.js', 'index.js', 'ui.js'];
     var EXPECTED = ['FSPCore', 'FSPIntegration', 'FSPUI'];
+    var VERSION = '0.1.0';
 
-    // ── 确定扩展目录 ─────────────────────────────────────────
-    var base = '';
-    try {
-        // ES module 里的正确做法
-        if (typeof import.meta !== 'undefined' && import.meta.url) {
-            base = String(import.meta.url).replace(/[?#].*$/, '').replace(/[^/]*$/, '');
-        }
-    } catch (e) { /* import.meta 不可用（被当普通脚本加载时） */ }
-
-    if (!base) {
-        // 退路一：普通脚本场景
+    // ── 可见状态徽章 ────────────────────────────────────────
+    // 用最朴素的方式创建一个固定定位的小标签，让加载过程可见
+    var badge = null;
+    function showBadge(text, color) {
         try {
-            var own = document.currentScript && document.currentScript.src;
-            if (own) base = String(own).replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+            if (!document.body) return;
+            if (!badge) {
+                badge = document.createElement('div');
+                badge.id = 'fsp-load-badge';
+                badge.style.cssText = 'position:fixed;top:8px;right:8px;z-index:99998;' +
+                    'padding:6px 10px;border-radius:7px;font-size:12px;line-height:1.5;' +
+                    'font-family:system-ui,-apple-system,sans-serif;max-width:70vw;' +
+                    'box-shadow:0 4px 14px rgba(0,0,0,.4);white-space:pre-wrap';
+                document.body.appendChild(badge);
+            }
+            badge.style.background = color || '#2b2b33';
+            badge.style.color = '#fff';
+            badge.textContent = '伏笔引擎 ' + VERSION + '\n' + text;
+        } catch (e) { /* 徽章只是辅助，失败不影响主流程 */ }
+    }
+    function hideBadge(delayMs) {
+        try {
+            if (!badge) return;
+            var b = badge;
+            badge = null;
+            setTimeout(function () { if (b && b.parentNode) b.parentNode.removeChild(b); }, delayMs || 0);
         } catch (e) { /* ignore */ }
     }
 
-    // 退路二：从已加载的 script 标签里找自己
-    if (!base) {
+    showBadge('启动中…', '#3a3a44');
+
+    // ── 确定扩展目录（不依赖任何特殊变量）──────────────────
+    function findBase() {
+        // 思路：遍历页面上所有 script 标签，找到 src 里含 foreshadow 的那个，
+        // 取它所在目录。这个办法在任何加载方式下都有效。
         try {
-            var tags = document.querySelectorAll('script[src*="foreshadow"]');
+            var tags = document.getElementsByTagName('script');
             for (var i = 0; i < tags.length; i++) {
-                var s = tags[i].getAttribute('src') || '';
-                if (s.indexOf('loader.js') !== -1) {
-                    base = s.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
-                    if (base.charAt(0) !== '/') {
-                        base = '/' + base.replace(/^\.\//, '');
-                    }
-                    break;
+                var src = tags[i].getAttribute('src') || '';
+                if (src.indexOf('foreshadow-engine') !== -1) {
+                    // 去掉文件名，保留目录；补上开头的 /
+                    var dir = src.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+                    if (dir.charAt(0) !== '/') dir = '/' + dir.replace(/^\.\//, '');
+                    if (dir.charAt(dir.length - 1) !== '/') dir += '/';
+                    return dir;
                 }
             }
-        } catch (e) { /* ignore */ }
+        } catch (e) { /* 继续往下试 */ }
+
+        // 退路：酒馆的固定路径约定（第三方扩展都存在 third-party 下）
+        return '/scripts/extensions/third-party/foreshadow-engine/';
     }
 
-    // 退路三：按酒馆已知的静态路径约定硬拼（用户目录挂载在 third-party/ 下）
-    if (!base) {
-        base = '/scripts/extensions/third-party/foreshadow-engine/';
-    }
+    var base = findBase();
+    console.log('[伏笔引擎] v' + VERSION + ' 扩展目录 = ' + base);
+    showBadge('目录 ' + base + '\n加载中…', '#3a3a44');
 
-    if (base.charAt(base.length - 1) !== '/') base += '/';
+    function urlOf(file) { return base + file; }
 
-    console.log('[伏笔引擎] 加载器启动，扩展目录 = ' + base);
-
-    function url(file) {
-        return base + file;
-    }
-
-    // ── 加载 ────────────────────────────────────────────────
-
-    /** 用 script 标签注入；返回 Promise，永不 reject（失败信息在结果对象里） */
-    function injectScript(src, label) {
+    // ── 加载一个文件 ────────────────────────────────────────
+    function injectScript(src) {
         return new Promise(function (resolve) {
             var s = document.createElement('script');
             s.src = src;
             s.async = false;
-            s.onload = function () {
-                console.log('[伏笔引擎] ✓ ' + label);
-                resolve({ ok: true, via: 'tag' });
-            };
-            s.onerror = function () {
-                console.warn('[伏笔引擎] ✗ script 标签加载失败，转用 fetch 兜底：' + label);
-                resolve({ ok: false, via: 'tag' });
-            };
+            s.onload = function () { resolve(true); };
+            s.onerror = function () { resolve(false); };
             (document.head || document.documentElement).appendChild(s);
         });
     }
 
-    /** 兜底：fetch 成文本后用内联 script 执行，绕开某些环境的 MIME 限制 */
-    function evalFallback(src, label) {
+    // 兜底：取回文本后直接执行，绕开 MIME 限制
+    function fetchAndRun(src) {
         return fetch(src, { cache: 'no-cache' })
             .then(function (r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -102,102 +104,109 @@
                 var s = document.createElement('script');
                 s.textContent = code + '\n//# sourceURL=' + src;
                 (document.head || document.documentElement).appendChild(s);
-                console.log('[伏笔引擎] ✓ ' + label + '（fetch 兜底）');
-                return { ok: true, via: 'fetch' };
+                return true;
             })
             .catch(function (e) {
-                console.error('[伏笔引擎] ✗ 兜底也失败：' + label + ' — ' + (e && e.message));
-                return { ok: false, via: 'fetch', error: e && e.message };
+                console.error('[伏笔引擎] 兜底也失败 ' + src, e);
+                return false;
             });
     }
 
     function loadOne(file) {
-        var src = url(file);
-        return injectScript(src, file).then(function (r) {
-            return r.ok ? r : evalFallback(src, file);
+        var src = urlOf(file);
+        return injectScript(src).then(function (ok) {
+            if (ok) {
+                console.log('[伏笔引擎] ✓ ' + file);
+                return true;
+            }
+            console.warn('[伏笔引擎] 标签加载失败，改用兜底：' + file);
+            return fetchAndRun(src).then(function (ok2) {
+                if (ok2) console.log('[伏笔引擎] ✓ ' + file + '（兜底）');
+                return ok2;
+            });
         });
     }
 
-    function loadAll() {
-        var chain = Promise.resolve();
-        FILES.forEach(function (f) {
-            chain = chain.then(function () { return loadOne(f); });
-        });
-        return chain;
+    // ── 顺序加载 ────────────────────────────────────────────
+    function run() {
+        var results = [];
+        var i = 0;
+
+        function next() {
+            if (i >= FILES.length) return Promise.resolve(results);
+            var f = FILES[i];
+            showBadge('目录 ' + base + '\n加载 ' + (i + 1) + '/' + FILES.length + '：' + f, '#3a3a44');
+            return loadOne(f).then(function (ok) {
+                results.push({ file: f, ok: ok });
+                i++;
+                return next();
+            });
+        }
+
+        return next();
     }
 
     // ── 校验 ────────────────────────────────────────────────
-
-    function missingModules() {
-        var missing = [];
+    function missing() {
+        var out = [];
         for (var i = 0; i < EXPECTED.length; i++) {
-            if (!window[EXPECTED[i]]) missing.push(EXPECTED[i]);
+            if (!window[EXPECTED[i]]) out.push(EXPECTED[i]);
         }
-        return missing;
+        return out;
     }
 
-    /** 给用户一个看得见的失败提示，而不是静默失灵 */
-    function showFatal(missing) {
-        var detail = '缺少模块：' + missing.join('、') +
-            '\n扩展目录：' + base +
-            '\n请确认该目录下存在 core.js / index.js / ui.js。';
-        try {
-            if (typeof toastr !== 'undefined') {
-                toastr.error(detail.replace(/\n/g, '<br>'), '伏笔引擎加载失败',
-                    { timeOut: 0, extendedTimeOut: 0 });
-            }
-        } catch (e) { /* ignore */ }
-
-        try {
-            if (document.getElementById('fsp-fatal')) return;
-            var box = document.createElement('div');
-            box.id = 'fsp-fatal';
-            box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:99999;' +
-                'background:#3a1d1f;color:#ffd9da;border:1px solid #e5484d;border-radius:9px;' +
-                'padding:12px 34px 12px 14px;font-size:13px;line-height:1.6;' +
-                'box-shadow:0 8px 24px rgba(0,0,0,.5);white-space:pre-wrap';
-            box.textContent = '伏笔引擎加载失败\n' + detail;
-
-            var close = document.createElement('span');
-            close.textContent = '✕';
-            close.style.cssText = 'position:absolute;top:6px;right:11px;cursor:pointer;opacity:.7;font-size:15px';
-            close.onclick = function () { box.remove(); };
-            box.appendChild(close);
-            document.body.appendChild(box);
-        } catch (e) { /* ignore */ }
-    }
-
-    /**
-     * 校验分两次：
-     *   第一次等脚本执行完（同步完成）
-     *   第二次给集成层留一点时间去等酒馆就绪（它自己会轮询，最多 ~20s）
-     * 只要 core 和 ui 在就算加载成功 —— 集成层挂载稍晚是正常的。
-     */
-    function verify(final) {
-        var missing = missingModules();
-        if (!missing.length) {
-            console.log('[伏笔引擎] ✓ 三层已就绪：' + EXPECTED.join(' / '));
-            return true;
+    function report(results) {
+        var miss = missing();
+        var failed = [];
+        for (var i = 0; i < results.length; i++) {
+            if (!results[i].ok) failed.push(results[i].file);
         }
-        // 集成层可能还在等酒馆就绪，不算致命
-        var hardMissing = missing.filter(function (m) { return m !== 'FSPIntegration'; });
-        if (hardMissing.length) {
-            console.error('[伏笔引擎] ✗ 以下模块未挂载：' + hardMissing.join(', '));
-            if (final) showFatal(hardMissing);
-            return false;
+
+        if (!miss.length) {
+            console.log('[伏笔引擎] ✓ 三层已就绪');
+            showBadge('✓ 加载成功', '#1f6b45');
+            hideBadge(2500);
+            return;
         }
-        if (final) {
-            console.warn('[伏笔引擎] FSPIntegration 尚未挂载（可能在等酒馆就绪）。core / ui 已就绪。');
+
+        // 集成层要等酒馆就绪，可能稍晚，不算硬失败
+        var hard = [];
+        for (var j = 0; j < miss.length; j++) {
+            if (miss[j] !== 'FSPIntegration') hard.push(miss[j]);
         }
-        return false;
+        if (!hard.length) {
+            console.log('[伏笔引擎] core / ui 已就绪，集成层仍在等酒馆就绪');
+            showBadge('✓ 界面已就绪\n（集成层稍后）', '#1f6b45');
+            hideBadge(2500);
+            return;
+        }
+
+        console.error('[伏笔引擎] ✗ 未挂载：' + hard.join(', ') + '；加载失败的文件：' + failed.join(', '));
+        var msg = '✗ 加载失败\n缺：' + hard.join('、');
+        if (failed.length) msg += '\n取不到：' + failed.join('、');
+        msg += '\n目录：' + base;
+        showBadge(msg, '#8a1f24');
+        // 失败时不自动消失，让用户能看到并截图
     }
 
     // ── 启动 ────────────────────────────────────────────────
+    function boot() {
+        run().then(function (results) {
+            setTimeout(function () { report(results); }, 100);
+            // 再复查一次（集成层可能在等酒馆就绪）
+            setTimeout(function () {
+                if (window.FSPCore && window.FSPUI && !window.FSPIntegration) {
+                    console.warn('[伏笔引擎] 集成层尚未挂载（酒馆可能还没就绪）');
+                }
+            }, 5000);
+        });
+    }
 
-    loadAll().then(function () {
-        // 脚本执行是同步的，立刻校验一次
-        setTimeout(function () { verify(false); }, 80);
-        // 再给集成层 6 秒（它内部最长等 ~20s，但不该让加载器一直挂着）
-        setTimeout(function () { verify(true); }, 6000);
-    });
+    if (document.body) {
+        boot();
+    } else if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', boot);
+    } else {
+        boot();
+    }
 })();
