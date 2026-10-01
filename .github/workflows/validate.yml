@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  syntax:
-    name: 语法与清单校验
+  validate:
+    name: 构建与校验
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,58 +17,100 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 校验四个脚本的语法
+      - name: 校验源码语法
         run: |
           set -e
-          for f in core.js index.js ui.js loader.js; do
+          for f in core.js app.js ui.js; do
             node --check "$f"
             echo "OK  $f"
           done
 
-      - name: 校验 manifest.json 必填字段
+      - name: 校验 manifest.json
         run: |
           node -e "
           const fs = require('fs');
           const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
-          const required = ['display_name', 'js', 'author'];
+
+          const required = ['display_name', 'js', 'author', 'version'];
           const missing = required.filter((k) => !m[k]);
           if (missing.length) {
             console.error('manifest.json 缺少必填字段: ' + missing.join(', '));
             process.exit(1);
           }
-          // 酒馆的 js 字段只能指定一个文件，这里必须指向加载器
-          if (m.js !== 'loader.js') {
-            console.error('manifest.json 的 js 字段应指向 loader.js（多文件加载器），实际是: ' + m.js);
+
+          // 酒馆生态只认单个 JS 文件
+          if (Array.isArray(m.js)) {
+            console.error('manifest.json 的 js 必须是单个字符串，不能是数组：' + JSON.stringify(m.js));
             process.exit(1);
           }
-          console.log('manifest.json OK  version=' + m.version + '  loading_order=' + m.loading_order);
+
+          // 入口必须存在
+          for (const key of ['js', 'css']) {
+            if (m[key] && !fs.existsSync(m[key])) {
+              console.error('manifest.json 的 ' + key + ' 指向的文件不存在: ' + m[key]);
+              process.exit(1);
+            }
+          }
+
+          console.log('manifest.json OK  ' + m.display_name + ' v' + m.version + '  js=' + m.js);
           "
 
-      - name: 校验加载器里声明的文件都真实存在
+      - name: 入口文件不得含模块特有语法（否则酒馆里会静默不执行）
         run: |
           node -e "
           const fs = require('fs');
-          const src = fs.readFileSync('loader.js', 'utf8');
-          const m = src.match(/var FILES = \[([^\]]+)\]/);
-          if (!m) { console.error('在 loader.js 里找不到 FILES 声明'); process.exit(1); }
-          const files = m[1].split(',').map((s) => s.trim().replace(/['\"]/g, '')).filter(Boolean);
-          let bad = 0;
-          for (const f of files) {
-            if (fs.existsSync(f)) { console.log('OK  ' + f); }
-            else { console.error('缺少文件: ' + f); bad++; }
+          const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          const src = fs.readFileSync(m.js, 'utf8');
+          const code = src.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+
+          const bad = [
+            ['import.meta', /\bimport\.meta\b/],
+            ['import 语句', /^\s*import\s+/m],
+            ['export 语句', /^\s*export\s+/m],
+            ['顶层 await', /^\s*await\s/m],
+          ];
+          let failed = 0;
+          for (const [label, re] of bad) {
+            if (re.test(code)) { console.error('入口文件含 ' + label + '（酒馆当模块加载，会静默失败）'); failed++; }
           }
-          if (bad) process.exit(1);
+          if (failed) process.exit(1);
+          console.log('入口文件语法安全');
+          "
+
+      - name: 构建产物必须与源码一致（防止改了源码忘记重新构建）
+        run: |
+          cp index.js /tmp/index.committed.js
+          node build.mjs
+          if ! diff -q /tmp/index.committed.js index.js > /dev/null; then
+            echo "::error::index.js 与源码不一致——你可能改了 core.js / app.js / ui.js 但忘记运行 node build.mjs"
+            echo "--- 差异（前 60 行）---"
+            diff /tmp/index.committed.js index.js | head -60
+            exit 1
+          fi
+          echo "构建产物与源码一致"
+
+      - name: 三个挂载点齐全
+        run: |
+          node -e "
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          const src = fs.readFileSync(m.js, 'utf8');
+          const need = ['window.FSPCore', 'window.FSPIntegration', 'window.FSPUI'];
+          const missing = need.filter((k) => !src.includes(k));
+          if (missing.length) { console.error('入口文件缺少挂载点: ' + missing.join(', ')); process.exit(1); }
+          console.log('挂载点齐全');
           "
 
       - name: 确认没有把密钥提交进来
         run: |
           node -e "
           const fs = require('fs');
-          const files = ['core.js', 'index.js', 'ui.js', 'loader.js'];
+          const files = ['core.js', 'app.js', 'ui.js', 'index.js'];
           const patterns = [
             ['OpenAI 风格密钥', /sk-[A-Za-z0-9]{20,}/],
             ['硬编码 Bearer', /Bearer [A-Za-z0-9_\-]{20,}/],
             ['疑似 apiKey 字面量', /apiKey\s*[:=]\s*[\"'][^\"']{16,}[\"']/],
+            ['疑似 github token', /gh[pousr]_[A-Za-z0-9]{20,}/],
           ];
           let bad = 0;
           for (const f of files) {
