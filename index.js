@@ -2374,43 +2374,67 @@
         }
     }
 
+    /**
+     * 注册斜杠命令。
+     *
+     * ⚠️ 正确 API 是 SlashCommand.fromProps({ name, callback, aliases, helpString })。
+     *    早期版本用了 `new SlashCommand(name, callback, [], help, true, false)`，
+     *    那个签名不存在，会在控制台留一条 warn（实际测试中抓到）。
+     *
+     * 整个函数用 try/catch 包住：斜杠命令是锦上添花，绝不能因为它失败影响主功能。
+     */
     function initSlashCommands() {
         var c = getCtx();
-        if (!c || !c.SlashCommandParser) { log('无 SlashCommandParser，跳过斜杠命令'); return; }
+        if (!c || !c.SlashCommandParser || !c.SlashCommand) {
+            log('无斜杠命令 API，跳过');
+            return;
+        }
         try {
             var Parser = c.SlashCommandParser;
-            var Cmd = c.SlashCommand;
-            var Arg = c.SlashCommandArgument;
-            var T = c.ARGUMENT_TYPE;
-            if (!Parser || !Cmd || typeof Parser.addCommandObject !== 'function') return;
+            var SlashCommand = c.SlashCommand;
+            if (typeof Parser.addCommandObject !== 'function' || typeof SlashCommand.fromProps !== 'function') {
+                log('斜杠命令 API 形态不符，跳过');
+                return;
+            }
 
-            Parser.addCommandObject(new Cmd(
-                'fsp',
-                function () { plan(); return ''; },
-                [],
-                '立即执行一次伏笔规划',
-                true, false
-            ));
-            Parser.addCommandObject(new Cmd(
-                'fsp-panel',
-                function () { if (window.FSPUI && window.FSPUI.toggle) window.FSPUI.toggle(true); return ''; },
-                [],
-                '打开伏笔台账面板',
-                true, false
-            ));
-            Parser.addCommandObject(new Cmd(
-                'fsp-list',
-                function () {
-                    var lines = ledger.active.map(function (e) {
-                        return '#' + e.id + ' [' + e.state + '] ' + e.title;
-                    });
-                    toast(lines.length ? lines.join('\n') : '（台账为空）', 'info');
-                    return '';
+            var defs = [
+                {
+                    name: 'fsp',
+                    helpString: '立即执行一次伏笔规划',
+                    callback: function () { plan(); return ''; },
                 },
-                [], '列出活跃伏笔', true, false
-            ));
-            log('斜杠命令已注册');
-        } catch (e) { warn('注册斜杠命令失败', e); }
+                {
+                    name: 'fsp-panel',
+                    helpString: '打开伏笔台账面板',
+                    callback: function () {
+                        if (window.FSPUI && window.FSPUI.toggle) window.FSPUI.toggle(true);
+                        return '';
+                    },
+                },
+                {
+                    name: 'fsp-list',
+                    helpString: '列出当前所有活跃伏笔',
+                    callback: function () {
+                        var lines = ledger.active.map(function (e) {
+                            return '#' + e.id + ' [' + e.state + '] ' + e.title;
+                        });
+                        toast(lines.length ? lines.join('\n') : '（台账为空）', 'info');
+                        return '';
+                    },
+                },
+            ];
+
+            for (var i = 0; i < defs.length; i++) {
+                try {
+                    Parser.addCommandObject(SlashCommand.fromProps(defs[i]));
+                } catch (e) {
+                    warn('注册 /' + defs[i].name + ' 失败', e);
+                }
+            }
+            log('斜杠命令已注册：/fsp /fsp-panel /fsp-list');
+        } catch (e) {
+            warn('注册斜杠命令失败（不影响主功能）', e);
+        }
     }
 
     // ─────────────────────────────────────────────────────────

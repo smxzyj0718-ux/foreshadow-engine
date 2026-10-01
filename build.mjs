@@ -24,6 +24,7 @@
 import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -104,7 +105,18 @@ function check() {
     const code = readFileSync(OUT, 'utf8');
     const problems = [];
 
-    // 去掉注释后检查（注释里提到这些词是允许的）
+    // ① 真实语法检查。
+    //    这一道是必须的：曾经因为一次编辑残留了孤立的 `catch`，
+    //    三个源码文件「看起来」没问题，但拼出来的产物有语法错误，
+    //    结果扩展在酒馆里静默不执行（连报错都要去控制台才看得到）。
+    //    构建时拦住，比让用户去手机上发现好得多。
+    const res = spawnSync(process.execPath, ['--check', OUT], { encoding: 'utf8' });
+    if (res.status !== 0) {
+        problems.push('语法检查未通过：\n' + (res.stderr || '').split('\n').slice(0, 6).join('\n'));
+    }
+
+    // ② 模块特有语法检查（酒馆当模块加载，含这些会静默失败）
+    //    去掉注释后检查——注释里提到这些词是允许的
     const noComment = code
         .split('\n')
         .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
@@ -115,6 +127,7 @@ function check() {
     if (/^\s*export\s+/m.test(noComment)) problems.push('含 export 语句');
     if (/^\s*await\s/m.test(noComment)) problems.push('含顶层 await');
 
+    // ③ 挂载点齐全
     for (const key of ['window.FSPCore', 'window.FSPIntegration', 'window.FSPUI']) {
         if (!code.includes(key)) problems.push(`缺少挂载点 ${key}`);
     }
@@ -124,7 +137,7 @@ function check() {
         problems.forEach((p) => console.error('  · ' + p));
         process.exit(1);
     }
-    console.log('✓ 校验通过（无模块特有语法、三个挂载点齐全）');
+    console.log('✓ 校验通过（语法正确、无模块特有语法、三个挂载点齐全）');
 }
 
 build();
