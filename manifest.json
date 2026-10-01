@@ -1,0 +1,12 @@
+{
+    "display_name": "伏笔引擎 (Foreshadow Engine)",
+    "loading_order": 120,
+    "requires": [],
+    "optional": [],
+    "js": "loader.js",
+    "css": "style.css",
+    "author": "built with DSH",
+    "version": "0.1.0",
+    "homePage": "",
+    "auto_update": false
+}

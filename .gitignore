@@ -1,0 +1,20 @@
+# 编辑器 / 系统垃圾
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 酒馆本地数据（绝不该提交）
+data/
+*.jsonl
+settings.json
+secrets.json
+
+# 本地调试
+*.log
+.env
+.env.*
+node_modules/
+
+# 打好的压缩包（发布走 Release，不入库）
+*.zip

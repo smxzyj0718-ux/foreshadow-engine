@@ -1,0 +1,82 @@
+name: validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    name: 语法与清单校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 校验四个脚本的语法
+        run: |
+          set -e
+          for f in core.js index.js ui.js loader.js; do
+            node --check "$f"
+            echo "OK  $f"
+          done
+
+      - name: 校验 manifest.json 必填字段
+        run: |
+          node -e "
+          const fs = require('fs');
+          const m = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
+          const required = ['display_name', 'js', 'author'];
+          const missing = required.filter((k) => !m[k]);
+          if (missing.length) {
+            console.error('manifest.json 缺少必填字段: ' + missing.join(', '));
+            process.exit(1);
+          }
+          // 酒馆的 js 字段只能指定一个文件，这里必须指向加载器
+          if (m.js !== 'loader.js') {
+            console.error('manifest.json 的 js 字段应指向 loader.js（多文件加载器），实际是: ' + m.js);
+            process.exit(1);
+          }
+          console.log('manifest.json OK  version=' + m.version + '  loading_order=' + m.loading_order);
+          "
+
+      - name: 校验加载器里声明的文件都真实存在
+        run: |
+          node -e "
+          const fs = require('fs');
+          const src = fs.readFileSync('loader.js', 'utf8');
+          const m = src.match(/var FILES = \[([^\]]+)\]/);
+          if (!m) { console.error('在 loader.js 里找不到 FILES 声明'); process.exit(1); }
+          const files = m[1].split(',').map((s) => s.trim().replace(/['\"]/g, '')).filter(Boolean);
+          let bad = 0;
+          for (const f of files) {
+            if (fs.existsSync(f)) { console.log('OK  ' + f); }
+            else { console.error('缺少文件: ' + f); bad++; }
+          }
+          if (bad) process.exit(1);
+          "
+
+      - name: 确认没有把密钥提交进来
+        run: |
+          node -e "
+          const fs = require('fs');
+          const files = ['core.js', 'index.js', 'ui.js', 'loader.js'];
+          const patterns = [
+            ['OpenAI 风格密钥', /sk-[A-Za-z0-9]{20,}/],
+            ['硬编码 Bearer', /Bearer [A-Za-z0-9_\-]{20,}/],
+            ['疑似 apiKey 字面量', /apiKey\s*[:=]\s*[\"'][^\"']{16,}[\"']/],
+          ];
+          let bad = 0;
+          for (const f of files) {
+            const src = fs.readFileSync(f, 'utf8');
+            for (const [label, re] of patterns) {
+              if (re.test(src)) { console.error(f + ' 命中 ' + label); bad++; }
+            }
+          }
+          if (bad) process.exit(1);
+          console.log('未发现硬编码密钥');
+          "

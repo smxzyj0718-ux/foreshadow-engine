@@ -1,0 +1,43 @@
+/*
+ * 伏笔引擎 · 可选样式增强
+ *
+ * 注意：插件的主要样式内联在 ui.js 里，以确保「装上就有样子」，
+ * 不依赖本文件的加载。本文件只放少量可选的覆盖/增强规则，
+ * 加载失败（例如某些平台上扩展 CSS 路径不同）不影响任何功能。
+ *
+ * 想改外观：优先改 ui.js 里的 CSS 数组（那是权威来源），
+ * 或在这里用更高优先级的选择器覆盖。
+ */
+
+/* 悬浮球在移动端稍微大一点，方便点按 */
+@media (max-width: 700px) {
+    .fsp-fab {
+        width: 50px;
+        height: 50px;
+        font-size: 22px;
+    }
+}
+
+/* 滚动条美化（桌面端） */
+.fsp-body::-webkit-scrollbar,
+.fsp-pre::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.fsp-body::-webkit-scrollbar-thumb,
+.fsp-pre::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 4px;
+}
+
+.fsp-body::-webkit-scrollbar-track,
+.fsp-pre::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* 深色主题下的输入框占位符可读性 */
+.fsp-row > input::placeholder,
+.fsp-row > textarea::placeholder {
+    color: rgba(255, 255, 255, 0.3);
+}
