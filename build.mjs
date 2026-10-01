@@ -9,19 +9,34 @@
  * 扩展出现在列表里、被勾选启用，但脚本一行都不执行（连报错都没有）。
  * 所以老老实实合并。
  *
- * 用法：
+ * ── 用法 ──
  *   node build.mjs            构建
- *   node build.mjs --check    构建后校验语法
+ *   node build.mjs --check    构建后校验
  *
- * 产物：ext/foreshadow-engine/index.js（不要手改，改 src 后重新构建）
+ * 脚本会自动探测源码位置：
+ *   · 同目录下有 core.js                       → 仓库根（发布形态）
+ *   · 同目录下有 ext/foreshadow-engine/core.js → 开发目录
+ *
+ * ── 产物必须可复现 ──
+ * 头部不写时间戳。否则每次构建字节都不同，「产物与源码一致」这类检查会永远失败。
  */
 
-import { readFileSync, writeFileSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SRC = join(__dirname, 'ext', 'foreshadow-engine');
+
+/** 自动探测源码目录 */
+function resolveSrc() {
+    if (existsSync(join(__dirname, 'core.js'))) return __dirname;
+    const nested = join(__dirname, 'ext', 'foreshadow-engine');
+    if (existsSync(join(nested, 'core.js'))) return nested;
+    console.error('✗ 找不到源码（core.js）。请在仓库根目录或开发目录运行本脚本。');
+    process.exit(1);
+}
+
+const SRC = resolveSrc();
 const OUT = join(SRC, 'index.js');
 
 // 顺序不能变：core（纯逻辑）→ app（集成）→ ui（界面）
@@ -38,11 +53,9 @@ const HEADER = `/**
  *    要改代码：改 core.js / app.js / ui.js，然后运行  node build.mjs
  *
  * ── 为什么是单文件 ──
- * 酒馆扩展的 manifest.json 只认单个 JS 文件（这是生态硬约束）。
+ * 酒馆扩展的 manifest.json 只认单个 JS 文件（生态硬约束）。
  * 三个源码文件按顺序拼进来，各自用 IIFE 隔离，通过 window.FSPCore /
  * window.FSPIntegration / window.FSPUI 互相通信。拼接不改变任何语义。
- *
- * 构建时间：${new Date().toISOString()}
  */
 
 `;
@@ -79,7 +92,8 @@ function build() {
     writeFileSync(OUT, out, 'utf8');
 
     const size = statSync(OUT).size;
-    console.log(`✓ 已生成 index.js`);
+    console.log('✓ 已生成 index.js');
+    console.log(`  源码目录：${SRC}`);
     console.log(`  来源：${PARTS.map((p) => p.file).join(' + ')}`);
     console.log(`  源码合计：${(totalBytes / 1024).toFixed(1)} KB`);
     console.log(`  产物大小：${(size / 1024).toFixed(1)} KB`);
@@ -87,21 +101,20 @@ function build() {
 }
 
 function check() {
-    // 简单自检：产物里不应出现模块特有语法，也不应有多余的 import/export
     const code = readFileSync(OUT, 'utf8');
     const problems = [];
 
-    // 去掉注释后检查
+    // 去掉注释后检查（注释里提到这些词是允许的）
     const noComment = code
         .split('\n')
         .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
         .join('\n');
 
-    if (/\bimport\.meta\b/.test(noComment)) problems.push('含 import.meta（模块特有语法）');
+    if (/\bimport\.meta\b/.test(noComment)) problems.push('含 import.meta（模块特有语法，酒馆里会静默不执行）');
     if (/^\s*import\s+/m.test(noComment)) problems.push('含 import 语句');
     if (/^\s*export\s+/m.test(noComment)) problems.push('含 export 语句');
+    if (/^\s*await\s/m.test(noComment)) problems.push('含顶层 await');
 
-    // 三个挂载点必须都在
     for (const key of ['window.FSPCore', 'window.FSPIntegration', 'window.FSPUI']) {
         if (!code.includes(key)) problems.push(`缺少挂载点 ${key}`);
     }

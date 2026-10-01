@@ -5,11 +5,9 @@
  *    要改代码：改 core.js / app.js / ui.js，然后运行  node build.mjs
  *
  * ── 为什么是单文件 ──
- * 酒馆扩展的 manifest.json 只认单个 JS 文件（这是生态硬约束）。
+ * 酒馆扩展的 manifest.json 只认单个 JS 文件（生态硬约束）。
  * 三个源码文件按顺序拼进来，各自用 IIFE 隔离，通过 window.FSPCore /
  * window.FSPIntegration / window.FSPUI 互相通信。拼接不改变任何语义。
- *
- * 构建时间：2026-10-01T13:58:37.506Z
  */
 
 
