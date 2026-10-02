@@ -2576,11 +2576,13 @@
         'text-align:center;padding:0 4px;font-weight:700;display:none}',
         '.fsp-fab .fsp-badge.fsp-show{display:block}',
 
-        '.fsp-overlay{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.55);',
-        'display:none;align-items:center;justify-content:center;padding:12px;box-sizing:border-box}',
+        // ⚠️ 遮罩用 inset:0 在这个酒馆里是【坏的】（html 有 transform，参照物高度为 0）。
+        //    实际尺寸由 applyPanelGeometry() 用 JS 写入，这里只给个兜底。
+        '.fsp-overlay{position:fixed;z-index:9999;background:rgba(0,0,0,.55);',
+        'display:none;align-items:center;justify-content:center;padding:0;box-sizing:border-box}',
         '.fsp-overlay.fsp-open{display:flex}',
-
-        '.fsp-panel{width:100%;max-width:720px;max-height:88vh;display:none;flex-direction:column;',
+        '.fsp-panel{box-sizing:border-box;',
+        'display:none;flex-direction:column;margin:auto;',
         'background:#1c1c21;color:#e6e6ea;border:1px solid rgba(255,255,255,.12);border-radius:12px;',
         'box-shadow:0 18px 50px rgba(0,0,0,.6);font-size:13px;overflow:hidden}',
         '.fsp-panel.fsp-open{display:flex}',
@@ -2860,6 +2862,7 @@
         $._viewportBound = true;
         var relayout = function () {
             try { positionFab(); } catch (e) { /* ignore */ }
+            try { applyPanelGeometry(); } catch (e) { /* ignore */ }
         };
         try { window.addEventListener('resize', relayout); } catch (e) { }
         try { window.addEventListener('orientationchange', relayout); } catch (e) { }
@@ -2950,11 +2953,49 @@
         render();
     }
 
+    /**
+     * 面板/遮罩的几何也要用 JS 现算。
+     *
+     * 原因和悬浮球一样：html 元素被酒馆加了 transform，position:fixed 的
+     * 参照物高度为 0。于是：
+     *   · 遮罩的 `inset: 0` 覆盖不到整屏
+     *   · 面板的 `max-height: 88vh` 失效
+     *   · flex 的 align-items:center 居中把面板顶到页面顶部（用户实测到的现象）
+     * 所以这里把遮罩撑满视口、把面板尺寸写死，并让 margin:auto 居中 ——
+     * auto 外边距在 flex 容器里居中不依赖容器高度，只依赖剩余空间。
+     */
+    function applyPanelGeometry() {
+        if (!$.overlay || !$.panel) return;
+        var vp = viewportSize();
+        var vw = vp.vw, vh = vp.vh;
+
+        try {
+            // 遮罩铺满视口
+            $.overlay.style.position = 'fixed';
+            $.overlay.style.top = '0px';
+            $.overlay.style.left = '0px';
+            $.overlay.style.width = vw + 'px';
+            $.overlay.style.height = vh + 'px';
+            $.overlay.style.display = $.overlay.classList.contains('fsp-open') ? 'flex' : 'none';
+
+            // 面板尺寸
+            var pad = 12;
+            var maxW = Math.min(720, vw - pad * 2);
+            var maxH = Math.max(200, vh - pad * 2);
+            $.panel.style.width = maxW + 'px';
+            $.panel.style.maxWidth = maxW + 'px';
+            $.panel.style.maxHeight = maxH + 'px';
+            // 让它在遮罩里自动居中（不依赖容器高度的写法）
+            $.panel.style.margin = 'auto';
+        } catch (e) { /* 几何只是显示问题，失败不影响功能 */ }
+    }
+
     function togglePanel(force) {
         if (!$.panel) buildPanel();
         var open = (force === undefined) ? !$.overlay.classList.contains('fsp-open') : !!force;
         $.overlay.classList.toggle('fsp-open', open);
         $.panel.classList.toggle('fsp-open', open);
+        applyPanelGeometry();
         if (open) { $.activeTab = $.activeTab || 'ledger'; render(); }
     }
 
