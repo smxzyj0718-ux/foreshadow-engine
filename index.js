@@ -2776,6 +2776,35 @@
     }
 
     /**
+     * 安全地取视口尺寸。
+     *
+     * 为什么不用 `window.innerWidth || document.documentElement.clientWidth`：
+     * 后者在 documentElement 缺失时会【抛异常】而不是返回 undefined，
+     * 从而中断整条 `||` 链，把调用方一起带崩（我们就在假 DOM 测试里踩到了）。
+     * 这里每一项都单独 try，任何一个取不到就继续往下试。
+     */
+    function viewportSize() {
+        var vw = 0, vh = 0;
+        try { vw = window.innerWidth || 0; vh = window.innerHeight || 0; } catch (e) { }
+        if (!vw || !vh) {
+            try {
+                var de = document.documentElement;
+                if (de) { vw = vw || de.clientWidth || 0; vh = vh || de.clientHeight || 0; }
+            } catch (e) { }
+        }
+        if (!vw || !vh) {
+            try {
+                var b = document.body;
+                if (b) { vw = vw || b.clientWidth || 0; vh = vh || b.clientHeight || 0; }
+            } catch (e) { }
+        }
+        // 全都取不到时给个保守的默认值（不抛错，保证功能能继续初始化）
+        if (!vw) vw = 360;
+        if (!vh) vh = 640;
+        return { vw: vw, vh: vh };
+    }
+
+    /**
      * 给悬浮球定位。
      *
      * ⚠️ 为什么不用 bottom / right（踩过的坑，很重要）：
@@ -2802,11 +2831,12 @@
 
         var gapRight = (s && s.buttonPos && s.buttonPos.right) || 18;
         var gapBottom = (s && s.buttonPos && s.buttonPos.bottom) || 120;
-        var size = $.btn.offsetWidth || 46;
 
-        // 用视口尺寸换算成 top/left。取不到视口信息时退回一个保守值。
-        var vw = window.innerWidth || document.documentElement.clientWidth || 360;
-        var vh = window.innerHeight || document.documentElement.clientHeight || 640;
+        var size = 46;
+        try { size = $.btn.offsetWidth || 46; } catch (e) { }
+
+        var vp = viewportSize();
+        var vw = vp.vw, vh = vp.vh;
 
         var left = vw - gapRight - size;
         var top = vh - gapBottom - size;
@@ -2833,11 +2863,12 @@
         };
         try { window.addEventListener('resize', relayout); } catch (e) { }
         try { window.addEventListener('orientationchange', relayout); } catch (e) { }
-        // 手机上地址栏收起/展开不会触发 resize，用 interval 兜底（仅比较数值，开销很小）
+        // 手机上地址栏收起/展开不会触发 resize，用定时比较兜底（只比数值，开销极小）
         var last = '';
         try {
             setInterval(function () {
-                var key = window.innerWidth + 'x' + window.innerHeight;
+                var vp = viewportSize();
+                var key = vp.vw + 'x' + vp.vh;
                 if (key !== last) { last = key; relayout(); }
             }, 1000);
         } catch (e) { }
