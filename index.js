@@ -1,51 +1,29 @@
 /**
- * 伏笔引擎 · 执行进度报告器（诊断用，加在正式产物最前面）
+ * 伏笔引擎 · 悬浮球位置诊断器（加在正式产物最前面）
  *
- * ── 位置的选择（踩过坑）──
- * 第一版把横幅固定在【页面顶部】并且 z-index 拉满 —— 结果把酒馆的设置页
- * 整个盖住，用户没法点「管理扩展程序」。
+ * 背景：手机上报告显示 fab=1（悬浮球确实建出来了），但用户看不见。
+ * 所以问题不是「没渲染」，而是「位置不对」或「被盖住」。
  *
- * 现在改成：插入到【扩展设置页面内部】（#extensions_settings），
- * 它是文档流里的普通元素，不会遮住任何东西。
- * 万一找不到容器，退化为页面底部的条，并且可以点「收起」。
+ * 本诊断器会打出：
+ *   · 悬浮球的定位方式与视口坐标
+ *   · 它中心点「最上层」是哪个元素（用来判断是否被别的元素盖住）
+ *   · 是否落在视口之外
+ *   · 它的实际尺寸与可见性
  *
- * 目的：如果正式版是「跑到一半崩了」，这里能看出崩在哪一层。
+ * 显示位置：插在扩展设置页内部（position: static，不遮挡任何东西）
  */
 (function () {
     'use strict';
-    var startAt = Date.now();
     var box = null;
-    var crashed = null;
 
-    try { document.body.setAttribute('data-fsp-probe', '1'); } catch (e) { }
+    try { document.body.setAttribute('data-fsp-probe', '2'); } catch (e) { }
 
-    function onError(msg) {
-        crashed = msg;
-        paint();
-    }
-
-    try {
-        window.addEventListener('error', function (ev) {
-            onError((ev && ev.message ? ev.message : 'unknown') +
-                (ev && ev.filename ? '  @ ' + String(ev.filename).split('/').pop() + ':' + ev.lineno : ''));
-        });
-    } catch (e) { }
-
-    try {
-        window.addEventListener('unhandledrejection', function (ev) {
-            var r = ev && ev.reason;
-            onError('Promise 未处理: ' + (r && r.message ? r.message : String(r)));
-        });
-    } catch (e) { }
-
-    /** 找酒馆的扩展设置容器 */
     function findHost() {
-        var ids = ['extensions_settings', 'extensions_settings2', 'extensionsMenu'];
+        var ids = ['extensions_settings', 'extensions_settings2'];
         for (var i = 0; i < ids.length; i++) {
             var el = document.getElementById(ids[i]);
             if (el) return { el: el, inline: true };
         }
-        // 退路：底部固定条
         if (document.body) return { el: document.body, inline: false };
         return null;
     }
@@ -54,61 +32,83 @@
         if (box && box.parentNode) return true;
         var host = findHost();
         if (!host) return false;
-        try {
-            box = document.createElement('div');
-            box.id = 'fsp-progress';
+        box = document.createElement('div');
+        box.id = 'fsp-probe2';
+        var base = 'color:#fff;padding:9px 11px;font-size:12px;line-height:1.65;' +
+            'font-family:monospace,sans-serif;white-space:pre-wrap;word-break:break-all;' +
+            'background:rgba(20,20,26,.96);border-radius:8px;';
+        box.style.cssText = host.inline
+            ? 'margin:8px 0;' + base
+            : 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99998;' + base;
+        if (host.el.firstChild) host.el.insertBefore(box, host.el.firstChild);
+        else host.el.appendChild(box);
+        return true;
+    }
 
-            var base = 'color:#fff;padding:9px 11px;font-size:12px;line-height:1.6;' +
-                'font-family:monospace,sans-serif;white-space:pre-wrap;word-break:break-all;';
-
-            if (host.inline) {
-                // 文档流里，绝不遮挡任何东西
-                box.style.cssText = 'margin:8px 0;border-radius:8px;background:rgba(11,107,58,.95);' + base;
-            } else {
-                box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99998;' +
-                    'border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.5);background:rgba(11,107,58,.95);' + base;
-            }
-
-            // 放在容器最前面，这样一打开扩展页就能看到
-            if (host.el.firstChild) host.el.insertBefore(box, host.el.firstChild);
-            else host.el.appendChild(box);
-
-            return true;
-        } catch (e) {
-            return false;
+    function describe(el) {
+        if (!el) return '(无)';
+        var s = el.tagName ? el.tagName.toLowerCase() : '?';
+        if (el.id) s += '#' + el.id;
+        if (el.className && typeof el.className === 'string') {
+            var c = el.className.trim().split(/\s+/).slice(0, 3).join('.');
+            if (c) s += '.' + c;
         }
+        return s;
     }
 
     function paint() {
         try {
             if (!ensure()) return;
-            var core = typeof window.FSPCore !== 'undefined';
-            var integ = typeof window.FSPIntegration !== 'undefined';
-            var ui = typeof window.FSPUI !== 'undefined';
-            var fab = document.querySelectorAll('.fsp-fab').length;
-            var panel = document.querySelectorAll('.fsp-panel').length;
+            var fab = document.querySelector('.fsp-fab');
+            var lines = [];
 
-            var lines = [
-                '伏笔引擎进度报告  ' + ((Date.now() - startAt) / 1000).toFixed(1) + 's',
-                'core.js  ' + (core ? 'OK' : 'X') +
-                '    app.js  ' + (integ ? 'OK' : 'X') +
-                '    ui.js  ' + (ui ? 'OK' : 'X'),
-                '悬浮球 ' + fab + '   面板 ' + panel + '   文档 ' + document.readyState
-            ];
-            if (crashed) lines.push('错误: ' + crashed);
+            // 一层：三层挂载状态（保留，便于确认）
+            lines.push('core=' + (typeof window.FSPCore !== 'undefined' ? 'OK' : 'X') +
+                '  app=' + (typeof window.FSPIntegration !== 'undefined' ? 'OK' : 'X') +
+                '  ui=' + (typeof window.FSPUI !== 'undefined' ? 'OK' : 'X'));
+
+            if (!fab) {
+                lines.push('✗ 找不到 .fsp-fab 元素');
+            } else {
+                var r = fab.getBoundingClientRect();
+                var cs = getComputedStyle(fab);
+                lines.push('悬浮球 rect: left=' + Math.round(r.left) + ' top=' + Math.round(r.top) +
+                    ' 宽=' + Math.round(r.width) + ' 高=' + Math.round(r.height));
+                lines.push('视口: ' + window.innerWidth + ' x ' + window.innerHeight);
+                lines.push('display=' + cs.display + '  visibility=' + cs.visibility +
+                    '  opacity=' + cs.opacity + '  zIndex=' + cs.zIndex +
+                    '  position=' + cs.position);
+
+                // 判断是否落在视口内
+                var inView = r.right > 0 && r.bottom > 0 &&
+                    r.left < window.innerWidth && r.top < window.innerHeight;
+                lines.push('在视口内: ' + (inView ? '是' : '✗ 否（跑到屏幕外了）'));
+                lines.push('内联样式: ' + (fab.getAttribute('style') || '(无)'));
+
+                // 中心点最上层是哪个元素 —— 判断是否被盖住
+                var cx = Math.round(r.left + r.width / 2);
+                var cy = Math.round(r.top + r.height / 2);
+                if (cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight) {
+                    var top = document.elementFromPoint(cx, cy);
+                    var isSelf = top === fab || (top && fab.contains && fab.contains(top));
+                    lines.push('(' + cx + ',' + cy + ') 处最上层: ' + describe(top));
+                    lines.push('是否就是悬浮球自己: ' + (isSelf ? '✓ 是' : '✗ 不是 → 被上面的元素盖住了'));
+                } else {
+                    lines.push('中心点在视口外，无法判断遮挡');
+                }
+            }
 
             box.textContent = lines.join('\n');
-            box.style.background = crashed ? 'rgba(138,31,36,.95)'
-                : (ui ? 'rgba(11,107,58,.95)' : 'rgba(138,90,0,.95)');
-
-            document.title = '进度 core=' + (core ? 1 : 0) + ' app=' + (integ ? 1 : 0) +
-                ' ui=' + (ui ? 1 : 0) + ' fab=' + fab;
-        } catch (e) { }
+            box.style.background = (fab && box.textContent.indexOf('✗') === -1)
+                ? 'rgba(11,107,58,.96)' : 'rgba(138,90,0,.96)';
+        } catch (e) {
+            try { if (box) box.textContent = '诊断出错: ' + e.message; } catch (e2) { }
+        }
     }
 
     paint();
-    var timer = setInterval(paint, 400);
-    setTimeout(function () { try { clearInterval(timer); } catch (e) { } }, 60000);
+    var t = setInterval(paint, 700);
+    setTimeout(function () { try { clearInterval(t); } catch (e) { } }, 45000);
 })();
 
 /**
