@@ -1,56 +1,114 @@
 /**
- * 执行进度报告器（诊断用，加在正式产物最前面）
+ * 伏笔引擎 · 执行进度报告器（诊断用，加在正式产物最前面）
  *
- * 它每 300ms 检查一次三层是否已挂载，并把进度显示在页面顶部。
+ * ── 位置的选择（踩过坑）──
+ * 第一版把横幅固定在【页面顶部】并且 z-index 拉满 —— 结果把酒馆的设置页
+ * 整个盖住，用户没法点「管理扩展程序」。
+ *
+ * 现在改成：插入到【扩展设置页面内部】（#extensions_settings），
+ * 它是文档流里的普通元素，不会遮住任何东西。
+ * 万一找不到容器，退化为页面底部的条，并且可以点「收起」。
+ *
  * 目的：如果正式版是「跑到一半崩了」，这里能看出崩在哪一层。
  */
 (function () {
     'use strict';
     var startAt = Date.now();
-    var el = null;
+    var box = null;
     var crashed = null;
 
-    // 全局错误监听：任何未捕获错误都记下来
+    try { document.body.setAttribute('data-fsp-probe', '1'); } catch (e) { }
+
+    function onError(msg) {
+        crashed = msg;
+        paint();
+    }
+
     try {
         window.addEventListener('error', function (ev) {
-            crashed = (ev && ev.message ? ev.message : 'unknown') +
-                (ev && ev.filename ? ' @ ' + String(ev.filename).split('/').pop() + ':' + ev.lineno : '');
-            paint();
+            onError((ev && ev.message ? ev.message : 'unknown') +
+                (ev && ev.filename ? '  @ ' + String(ev.filename).split('/').pop() + ':' + ev.lineno : ''));
         });
     } catch (e) { }
 
+    try {
+        window.addEventListener('unhandledrejection', function (ev) {
+            var r = ev && ev.reason;
+            onError('Promise 未处理: ' + (r && r.message ? r.message : String(r)));
+        });
+    } catch (e) { }
+
+    /** 找酒馆的扩展设置容器 */
+    function findHost() {
+        var ids = ['extensions_settings', 'extensions_settings2', 'extensionsMenu'];
+        for (var i = 0; i < ids.length; i++) {
+            var el = document.getElementById(ids[i]);
+            if (el) return { el: el, inline: true };
+        }
+        // 退路：底部固定条
+        if (document.body) return { el: document.body, inline: false };
+        return null;
+    }
+
+    function ensure() {
+        if (box && box.parentNode) return true;
+        var host = findHost();
+        if (!host) return false;
+        try {
+            box = document.createElement('div');
+            box.id = 'fsp-progress';
+
+            var base = 'color:#fff;padding:9px 11px;font-size:12px;line-height:1.6;' +
+                'font-family:monospace,sans-serif;white-space:pre-wrap;word-break:break-all;';
+
+            if (host.inline) {
+                // 文档流里，绝不遮挡任何东西
+                box.style.cssText = 'margin:8px 0;border-radius:8px;background:rgba(11,107,58,.95);' + base;
+            } else {
+                box.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99998;' +
+                    'border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.5);background:rgba(11,107,58,.95);' + base;
+            }
+
+            // 放在容器最前面，这样一打开扩展页就能看到
+            if (host.el.firstChild) host.el.insertBefore(box, host.el.firstChild);
+            else host.el.appendChild(box);
+
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
     function paint() {
         try {
-            if (!document.body) return;
-            if (!el) {
-                el = document.createElement('div');
-                el.id = 'fsp-progress';
-                el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483647;' +
-                    'background:#0b6b3a;color:#fff;padding:10px 12px;font-size:14px;' +
-                    'font-family:sans-serif;line-height:1.7;text-align:center;white-space:pre-wrap';
-                document.body.appendChild(el);
-            }
+            if (!ensure()) return;
             var core = typeof window.FSPCore !== 'undefined';
             var integ = typeof window.FSPIntegration !== 'undefined';
             var ui = typeof window.FSPUI !== 'undefined';
             var fab = document.querySelectorAll('.fsp-fab').length;
+            var panel = document.querySelectorAll('.fsp-panel').length;
+
             var lines = [
-                '进度报告（每 0.3 秒刷新）  ' + ((Date.now() - startAt) / 1000).toFixed(1) + 's',
-                'core.js        ' + (core ? '✓ 已执行' : '✗ 未执行'),
-                'app.js         ' + (integ ? '✓ 已执行' : '✗ 未执行'),
-                'ui.js          ' + (ui ? '✓ 已执行' : '✗ 未执行'),
-                '悬浮球数量     ' + fab,
-                '文档状态       ' + document.readyState
+                '伏笔引擎进度报告  ' + ((Date.now() - startAt) / 1000).toFixed(1) + 's',
+                'core.js  ' + (core ? 'OK' : 'X') +
+                '    app.js  ' + (integ ? 'OK' : 'X') +
+                '    ui.js  ' + (ui ? 'OK' : 'X'),
+                '悬浮球 ' + fab + '   面板 ' + panel + '   文档 ' + document.readyState
             ];
-            if (crashed) lines.push('', '❌ 捕获到错误：' + crashed);
-            el.textContent = lines.join('\n');
-            el.style.background = crashed ? '#8a1f24' : (ui ? '#0b6b3a' : '#8a5a00');
-            document.title = '进度 core=' + (core ? 1 : 0) + ' app=' + (integ ? 1 : 0) + ' ui=' + (ui ? 1 : 0) + ' fab=' + fab;
+            if (crashed) lines.push('错误: ' + crashed);
+
+            box.textContent = lines.join('\n');
+            box.style.background = crashed ? 'rgba(138,31,36,.95)'
+                : (ui ? 'rgba(11,107,58,.95)' : 'rgba(138,90,0,.95)');
+
+            document.title = '进度 core=' + (core ? 1 : 0) + ' app=' + (integ ? 1 : 0) +
+                ' ui=' + (ui ? 1 : 0) + ' fab=' + fab;
         } catch (e) { }
     }
 
     paint();
-    setInterval(paint, 300);
+    var timer = setInterval(paint, 400);
+    setTimeout(function () { try { clearInterval(timer); } catch (e) { } }, 60000);
 })();
 
 /**
