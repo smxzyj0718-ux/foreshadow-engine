@@ -246,13 +246,72 @@
         return fab;
     }
 
+    /**
+     * 给悬浮球定位。
+     *
+     * ⚠️ 为什么不用 bottom / right（踩过的坑，很重要）：
+     *   酒馆的 style.css 里有这么一段，为了修 Chrome 上模糊元素的闪烁：
+     *       html { -webkit-transform: translateZ(0); -webkit-perspective: 1000; }
+     *   只要祖先链上有 transform（哪怕是"零位移"的矩阵），
+     *   position:fixed 就不再相对【视口】定位，而是相对那个祖先。
+     *   结果：html 元素高度为 0 → bottom:120px 被算成 -120px → 按钮跑到屏幕上方外面。
+     *   实测（手机视口 384x736）：按钮 top = -166，完全看不见。
+     *   桌面 Chrome 上恰好还能看见，所以极易漏掉（我们就是漏了）。
+     *
+     *   解法：只用 top / left，按【视口尺寸现算】。
+     *   top/left 不依赖参照物的高度，因此不受这个 bug 影响。
+     */
     function positionFab() {
         if (!$.btn) return;
         var s = I.getSettings();
-        var pos = (s && s.buttonPos) || { right: 18, bottom: 120 };
-        $.btn.style.right = (pos.right || 18) + 'px';
-        $.btn.style.bottom = (pos.bottom || 120) + 'px';
-        $.btn.style.display = (s && s.showFloatingButton) ? 'flex' : 'none';
+
+        if (s && s.showFloatingButton === false) {
+            $.btn.style.display = 'none';
+            return;
+        }
+        $.btn.style.display = 'flex';
+
+        var gapRight = (s && s.buttonPos && s.buttonPos.right) || 18;
+        var gapBottom = (s && s.buttonPos && s.buttonPos.bottom) || 120;
+        var size = $.btn.offsetWidth || 46;
+
+        // 用视口尺寸换算成 top/left。取不到视口信息时退回一个保守值。
+        var vw = window.innerWidth || document.documentElement.clientWidth || 360;
+        var vh = window.innerHeight || document.documentElement.clientHeight || 640;
+
+        var left = vw - gapRight - size;
+        var top = vh - gapBottom - size;
+
+        // 保险：绝不允许跑到屏幕外
+        if (left < 4) left = 4;
+        if (top < 4) top = 4;
+        if (left > vw - size - 4) left = Math.max(4, vw - size - 4);
+        if (top > vh - size - 4) top = Math.max(4, vh - size - 4);
+
+        // 清掉可能残留的 bottom/right，避免和 top/left 打架
+        $.btn.style.bottom = 'auto';
+        $.btn.style.right = 'auto';
+        $.btn.style.left = Math.round(left) + 'px';
+        $.btn.style.top = Math.round(top) + 'px';
+    }
+
+    /** 视口变化时重新定位（横竖屏切换、地址栏收起等） */
+    function bindViewportWatch() {
+        if ($._viewportBound) return;
+        $._viewportBound = true;
+        var relayout = function () {
+            try { positionFab(); } catch (e) { /* ignore */ }
+        };
+        try { window.addEventListener('resize', relayout); } catch (e) { }
+        try { window.addEventListener('orientationchange', relayout); } catch (e) { }
+        // 手机上地址栏收起/展开不会触发 resize，用 interval 兜底（仅比较数值，开销很小）
+        var last = '';
+        try {
+            setInterval(function () {
+                var key = window.innerWidth + 'x' + window.innerHeight;
+                if (key !== last) { last = key; relayout(); }
+            }, 1000);
+        } catch (e) { }
     }
 
     function setBadge(n) {
@@ -1082,6 +1141,7 @@
         injectStyle();
         buildFab();
         positionFab();
+        bindViewportWatch();
         buildPanel();
         // 渲染一次头部信息
         setTimeout(function () { updateBadge(); }, 50);
